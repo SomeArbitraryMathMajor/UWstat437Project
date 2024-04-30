@@ -1,0 +1,404 @@
+---
+title: "Implementing Optimal Survival Tree Algorithm"
+author:
+  - Bryan Zang^[University of Waterloo, bszang@uwaterloo.ca]
+  - Linsi Zhong^[University of Waterloo, l33zhong@uwaterloo.ca]
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[RO]{STAT437 Final Project}
+abstract: |
+  As tree-based methods have become increasingly popular, an obvious question of interest would be about the comparison of such methods to more traditional regression models. In this paper we conduct a naive comparison between trees built from the \texttt{rfsrc} and \texttt{iai} packages with the results of a Cox proportional hazards model.
+always_allow_html: true
+bibliography: ims.bib
+biblio-style: imsart-nameyear
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+With the progression in development of statistical models, it is evident that tree-based methods have become increasingly popular due to the ease of interpretation, high accuracy, and high stability in comparison to traditional models in the case of supervised learning. However, of the publicly available packages, there are relatively few that are suitable for analyzing survival data. To better understand the advantages and disadvantages of these methods, we will conduct a simple comparison between models resulting from three different methods: (1) the Cox proportional hazards model, (2) a survival tree built using Ishwaran et al.'s Random Survival Forest (RSF) algorithm[^1], and (3) a survival tree built from the recently published Optimal Survival Tree (OST) algorithm[^2].
+
+[^1]: @ishwaran2008rsf
+[^2]: @bertsimas2022ost
+
+# Methodology
+
+The Cox proportional hazards model is a well-known and commonly used regression model for survival analysis, it explains the hazard rate of an event as a linear combination of the effects of the covariates. Tree-based methods (also referred to by recursive partitioning techniques) on the other hand work off of an algorithm since they are nonparametric. The core idea is to repeatedly split the covariate space, based on some loss function, into small regions (nodes) containing homogeneous observations. The smallest nodes at the end of the tree are called leaves and the first node the tree begins with is called the root. This construction allows for easy-to-interpret structures and as well as the ability to explain complex, nonlinear relations between covariates. However, the training of trees based on traditional algorithms require complete observations of data, which is not guaranteed in survival analysis due to censoring. Hence there are various algorithms developed to bypass this issue, in this paper we will only consider trees constructed from the RSF algorithm and the OST algorithm. The main focus is on the OST algorithm so in-depth details relating to the RSF algorithm will be omitted. Note that we force the RSF algorithm to output a tree by setting the maximum amount of trees in the forest to be 1; this is done mostly due to the availability of accuracy metric computations, with packages such as \texttt{rpart} and \texttt{ctree} we found it difficult/impossible to obtain the same statistics as that of the \texttt{iai}[^3] package.
+
+[^3]: @benzanson2017julia
+
+## Tree Construction
+
+Tree algorithms in general consist of two main parts: (1) the splitting rule and (2) the pruning rule. The splitting rule selects the partitions to incorporate into the tree model; mainly we consider node-distance or node-purity splitting rules, where node-distance states the selection should maximize the difference between separate nodes and node-purity states the selection should group similar observations in a single node. Since under node-distance splitting rules it is not possible to assess singular nodes in isolation, the OST algorithm considers only node-purity splitting rules. Note that the Cox model's score function is in fact an example of a node-distance splitting rule. Once a splitting rule is established, the model must also state a pruning rule to dictate when to stop adding more partitions. Cost-complexity pruning is mainly used when considering node-purity splitting rules since cost-complexity seeks to select trees with minimum weighted combination of the total error and tree complexity. Here, total error is defined by the sum of each leaf node error and tree complexity is defined by the number of leaf nodes --- the corresponding weights for these values are determined through cross validation.
+
+## Optimal Trees Algorithm
+
+The OST algorithm extends the optimal trees algorithm also by Bertsimas and Dunn to accommodate for survival data. Traditionally, trees are constructed by a top-down, greedy manner, so each split is determined independently without considering the effect of the selection in regards to future splits --- note that the RSF algorithm employs this type of method. This is obviously a main disadvantage since not every problem is convex and so a solution from a greedy algorithm is not guaranteed to be globally optimal. Issues such as poor generalization and faulty interpretations can arise from this drawback. In order to fix this problem, solutions such as random forests have been proposed. Random forests aggregate on the results of multiple trees, and although they can produce results with higher accuracy, the non-linearity can lead to black-box models with are un-interpretable. Bertsimas et al., proposes to replace this framework with a one-step approach --- instead of a greedy optimization problem they instead consider a mixed-integer optimization (MIO) problem that is to be solved using coordinate descent. Each split in the tree is decided with full knowledge of all other splits and hence this new framework allows for preservation of interpretability and the scalability to larger datasets without resulting in computational complexity issues. At a high-level understanding, this framework (optimal tree algorithm) randomly visits each node $k$ and repeats the following steps:
+- if $k$ is not leaf, delete split at $k$
+- if $k$ is not leaf, find optimal split to use at $k$ and update current split
+- if $k$ is leaf, create new split at $k$
+for each change induced, the objective value of the new tree is calculated with respect to the loss function
+$$\min_T \texttt{error}(T,D)+\alpha\cdot\texttt{complexity}(T)$$
+where $T$ is the tree model, $D$ is the training data, $\alpha$ is a tuning parameter that determines the cost-complexity trade-off (also called complexity parameter), \texttt{error} is a function measuring how well $T$ fits $D$, and \texttt{complexity} is a function penalizing the complexity of $T$. When no more changes are done, the algorithm outputs the final model as a local optimum, let us denote this solution as $\tau$. Since the problem of optimizing tree models is non-convex, this process is repeated with multiple, randomly-generated initial trees for which we will denote the series of solutions to be $\{\tau_i\}_{i=1}^m$ for $n$ randomly-generated initial trees. The optimal tree algorithm will output the solution $\tau_j$ if the initial tree $j$ results in a solution with the minimum objective value.
+
+## Optimal Survival Trees
+Suppose we have survival data with observations $\left(t_i,\delta_i\right)_{i=1}^n$ where $t_i$ denotes the time of last observation of $i$ and $\delta_i$ is an indicator for $i$ taking value of 1 if the last observation of $i$ was a death and 0 if it was a censoring. The algorithm uses a splitting rule derived from a proportional hazards model, which recall assumes that the true survival distribution for each observation is explained by
+$$P(S_i\leq t)=1-e^{-\theta_i\Lambda(t)}$$
+where $\Lambda(t)$ is the baseline cumulative hazards function and $\theta_i$ is the adjustment to the baseline cumulative hazard for each observation $i$. Empirically, we estimate the cumulative hazard function with the Nelson-Aalen estimator
+$$\hat\Lambda(t)=\sum_{i:t_i\leq t}\frac{\delta_i}{\sum_{j:t_j\geq t}1}$$
+and assuming that all the coefficients for observations in the same node are equal, then we have the within-leaf sample likelihood to be
+$$L=\prod_{i=1}^n\left(\theta_i\frac{d}{dt}\Lambda(t_i)\right)^{\delta_i}e^{-\theta_i\Lambda(t_i)}$$
+maximizing with respect to the coefficients $\theta_i$, we obtain the maximum within-leaf sample likelihood estimates for node $k$ to be
+$$\hat\theta_k=\frac{\sum_i\delta_i\mathbf 1_{\{T_i=k\}}}{\sum_i\hat\Lambda(t_i)\mathbf 1_{\{T_i=k\}}}$$
+To compare how well these estimates from the corresponding splits are, we first define a fully saturated tree to be a tree where every observation has a single coefficient, this means there is a unique parameter for each observation in this model; the coefficients for each node follows to be given by
+$$\hat\theta_i^{\text{sat}}=\frac{\delta_i}{\hat\Lambda(t_i)},\quad\text{for }i=1,...,n$$
+The algorithm then computes the prediction error at each node as the difference between the log-likelihood of the current fitted node and that of the saturated model's coefficients, which can be found to be
+$$\texttt{error}_k=\sum_{i:T(i)=k}\left(\delta_i\log\left(\frac{\delta_i}{\hat\Lambda(t_i)}\right)-\delta_i\log\hat\theta_k-\delta_i+\hat\Lambda(t_i)\cdot\hat\theta_k\right)$$
+with this prediction error, the algorithm updates the overall error function to be the sum of the leaf-node errors
+$$\texttt{error}(T,D)=\sum_{k}\texttt{error}_k(D)$$
+which in turn replaces the overall loss function. Thus, it can be seen that the coordinate descent optimization process consists of repeatedly computing $\hat\theta_k$ using the maximum within-leaf sample likelihood estimates for which the within-leaf prediction error is calculated to continuously update the overall loss function in order to guide the descent towards a minimum.
+
+# Data Analysis
+```{r, echo=F, message=F, warning=F}
+library(survival)
+library(randomForestSRC)
+library(survAUC)
+library(survminer)
+library(dplyr)
+library(finalfit)
+library(patchwork)
+
+data(cancer, package = 'survival')
+df <- na.omit(mgus2)
+
+## splitting data for training
+X <- df[, 2:7] # (2:7)[-3]
+died <- df$death == 1
+times <- df$futime
+split <- iai::split_data('survival', X, died, times, seed=437)
+train_X <- split$train$X
+train_died <- split$train$deaths
+train_times <- split$train$times
+test_X <- split$test$X
+test_died <- split$test$deaths
+test_times <- split$test$times
+
+## corresponding split for coxph and rsf
+train.df <- cbind(train_times, train_died, train_X)
+names(train.df) <- c('time', 'status', names(train.df)[-c(1,2)])
+test.df <- cbind(test_times, test_died, test_X)
+names(test.df) <- c('time', 'status', names(test.df)[-c(1,2)])
+```
+The dataset under examination is derived from a study on Monoclonal Gammopathy of Undetermined Significance (MGUS), encompassing the natural history records of 1,341 patients consecutively enrolled up to the year 1994, with follow-up data extending through 1999. This dataset is sourced from the `survival` package in `R`, representing a comprehensive cohort aimed at investigating the progression and outcomes associated with MGUS. The primary outcome of interest is the time to death, with the analysis incorporating several critical covariates such as age at diagnosis, sex, and the size of the monoclonal serum spike. This is a long-term study since the time until death or last contact varies from 1 month to 424 months and it involves 631 females, which is about half of the subjects. Also, age at diagnosis of subjects varies from 24 to 96 years old, with a mean of 70.42 years. 
+```{r}
+head(mgus2)
+sum(is.na(mgus2))
+```
+there are 54 incomplete entries which we will omit in our analysis. We can construct a life table for time points 10-50 jumping by 10 to get
+```{r, echo=F}
+survival_object <- mgus2 %$% 
+  Surv(futime, death)
+fit <- survfit(survival_object ~ 1, data = mgus2)
+# life table
+summary(fit, times = seq(0, 50, by=10))
+```
+from which we can say that the decline in survival rate seems relatively even and that there are no sudden gaps at least in the first 50 time points. In addition, we notice there is a sex variable, and so an intuitive idea is to see if there is a significant difference between the data for males and females; plotting two Kaplan-Meier curves, we have
+```{r, echo=F, fig.align='center', out.width='70%'}
+## Kaplan-Meier for sex
+dependent <- 'Surv(futime, death)'
+explanatory <- 'sex'
+mgus2 %>%
+  surv_plot(
+    dependent, explanatory, pval=F, size=0.7,
+    censor.size=2, risk.table.fontsize=3,
+    risk.table=T)
+```
+both sexes follow a similar trend and do not differ in value by a lot, however it is the case that females generally have a slightly higher probability of event at each time point. Specific to the following models, we do not incorporate the variables \texttt{ptime} and \texttt{pstat} and note the variables of interest is defined by the variables \texttt{futime}, denoting the time until death/last contact, and \texttt{death}, denoting the occurrence of death (1 for yes and 0 for no). This leaves us with six usable covariates as explanatory variables: age at diagnosis in years (\texttt{age}), sex (\texttt{sex}), year of diagnosis (\texttt{dxyr}), hemoglobin (\texttt{hgb}), creatinine (\texttt{creat}), and the size of the monoclonal serum spike (\texttt{mspike}).
+
+## Model Fitting
+We randomly split the data using the `iai::split_data` function into a 70:30 split where 70\% of the data is used for training and the remaining 30\% is used for testing. Now, the output of this function is suited for training the OST with `iai::optimal_tree_survival_learner` but it is not suitable for training the RSF tree nor the Cox model; so we manipulate the data to obtain 
+```{r}
+head(train.df)
+head(test.df)
+```
+then fitting the Cox model on both sets we have
+```{r, echo=F, fig.align='center', out.width='80%'}
+fit.cox <- coxph(
+  Surv(time, status) ~ .,
+  data=train.df); summary(fit.cox)
+fit.cox.test <- coxph(
+  Surv(time, status) ~ .,
+  data=test.df); summary(fit.cox.test)
+p1 <- ggadjustedcurves(fit.cox, data=train.df, variable='sex')
+p2 <- ggadjustedcurves(fit.cox.test, data=test.df, variable = 'sex')
+p1 + p2
+```
+for simplicity of interpretation we plot the empirical survival curves from both Cox models with respect to sex (training on the left, testing on the right) and we can see that the results resemble that of the EDA above and the model fit to the training set displays slightly higher survival rates. Fitting the RSF trees (first on training then on testing),
+```{r, echo=F, fig.align='center'}
+fit.tree.rfsrc <- rfsrc(
+  Surv(time, status) ~ .,
+  data=train.df, ntree=1, nodedepth=3); fit.tree.rfsrc
+plot(get.tree(fit.tree.rfsrc, 1))
+fit.tree.rfsrc.test <- rfsrc(
+  Surv(time, status) ~ .,
+  data=test.df, ntree=1, nodedepth=3); fit.tree.rfsrc.test
+plot(get.tree(fit.tree.rfsrc.test, 1))
+```
+we can see that both trees have 3 levels and that with the training set, the first split is chosen with creatinine and that this model sees more splitting required for lower creatinine levels, indicating possibly more variance/information in survivability with lower creatinine; the tree fit to the testing set varies in initial split and included variables, such as the incorporation of \texttt{dxyr} but exclusion of \texttt{sex} and \texttt{mspike}. Lastly, modeling the OST
+```{r, echo=F, out.width='80%', fig.align='center'}
+## optimal survival tree
+grid <- iai::grid_search(
+  iai::optimal_tree_survival_learner(
+    random_seed = 1,
+    missingdatamode = 'separate_class',
+    minbucket = 1,
+  ),
+  max_depth = 1:3,
+)
+fit.ost <- iai::fit(grid, train_X, train_died, train_times,
+                     validation_criterion = 'harrell_c_statistic')
+iai::get_learner(grid)
+iai::get_grid_result_summary(grid)
+knitr::include_graphics(
+  'C:/Users/Bryan/Dropbox/PC/Documents/R/temp/ost.png',
+  dpi=0.5)
+```
+We again can see it is a tree of depth 3 and that there is a focus on the age variable since both the initial split and first level are split according to age, indicating for age to be a deciding factor in terms of variance of survivability. Then with all three models fitted we obtain the following concordance statistics
+```{r, echo=F}
+## concordance value
+cox.c.stat <- c(concordance(fit.cox)$concordance,
+                concordance(fit.cox.test)$concordance)
+tree.c.fn <- function(x, died, times)
+  iai::score(grid, x, died, times, criterion='harrell_c_statistic')
+ost.c.stat <- c(
+  tree.c.fn(train_X, train_died, train_times),
+  tree.c.fn(test_X, test_died, test_times))
+tree.c.stat <- c(1-fit.tree.rfsrc$err.rate,
+                 1-fit.tree.rfsrc.test$err.rate)
+# table
+c.stat <- rbind(ost.c.stat, tree.c.stat, cox.c.stat)
+colnames(c.stat) <- c('training', 'testing')
+
+## OST AUC
+ost.auc <- c()
+treeaucmap <- function(t) {
+  tryCatch(
+    expr = {
+      iai::score(grid, test_X, test_died, test_times,
+                 criterion = 'auc', evaluation_time=t)
+    },
+    error = function(e){
+      message(paste('error at:',t))
+    }
+  )
+}
+for (i in test_times) {
+  ost.auc <- c(ost.auc, treeaucmap(i))
+}
+## tree AUC
+pred.struct <- predict(fit.tree.rfsrc)$yvar
+lp <- pred.struct[,2]
+pred.struct.test <- predict(fit.tree.rfsrc, newdata=test.df)$yvar
+lpnew <- pred.struct.test[,2]
+Surv.rsp <- Surv(train.df$time, train.df$status)
+Surv.rsp.new <- Surv(test.df$time, test.df$status)
+tree.auc <- AUC.cd(
+  Surv.rsp, Surv.rsp.new, lp, lpnew, test_times)$auc
+## cox AUC
+lp <- predict(fit.cox)
+lpnew <- predict(fit.cox, newdata=test.df)
+cox.auc <- AUC.cd(Surv.rsp, Surv.rsp.new, lp, lpnew, test_times)$auc
+# table
+auc.stat <- rbind(ost.auc, tree.auc, cox.auc)
+colnames(auc.stat) <- test_times
+
+## comparison results
+round(c.stat, 4)
+```
+OST performs better than the RSF tree however the Cox model outperforms both tree models by a small amount. Then taking a look at the dynamic AUC values
+```{r, echo=F}
+round(rowMeans(auc.stat), 4)
+```
+we see that again the results from the Cox model perform the best and that the OST results are better than that of the RSF tree. We note that the dynamic AUC for the RSF tree model is particularly low, this may be because of how the AUC values are calculated in the `survAUC` package.
+
+# Conclusion
+We confirm the results of Bertsimas et al. in which the model yielding from the OST algorithm indeed is optimal relative to another tree-based model. In particular we compared the OST to a tree constructed from the traditional top-down, greedy approach; we see not only the better performance in the corresponding Harrell's C statistics but also complete domination in terms of dynamic AUC values. Overall we conclude that the Cox model displays the best performance, followed by the OST, and then lastly the RSF tree model. However, it is worth noting that this comparative analysis is very limited and naive in nature since we only considered one dataset and one construction of each model. A better comprehensive study would be to conduct the analysis on multiple datasets, using multiple constructions of the models, and possibly even including accuracy metrics from other packages. This problem was addressed earlier where we noted the difficulty in obtaining certain metrics from packages such as \texttt{rpart} and \texttt{ctree}. In addition, some other problems encountered include the discrepancy in value-naming, specifically, the \texttt{iai} package for the OST model abuses terminology and claims certain function outputs to be something it is not. For example, the official documentation states that for some time \texttt{t}, the command
+```{r, eval=F}
+pred_curves <- iai::predict(grid, test_X)
+sapply(pred_curves, `[`, t)
+```
+should query all the survival probabilities for time \texttt{t}, however it was found to be instead the empirical CDF values. This type of issue occurred more than once throughout the course of this project, hence why only two accuracy metrics are considered in this paper; so it is obvious more time and more resources would be needed in order to conduct a well-structured comprehensive analysis.
+
+\newpage
+
+## Acknowledgements {.unnumbered}
+
+We would like to thank Professor Diao Liqun for the amazing job she has done over this past semester, we have learnt a lot and found the course to be very fun and informational.
+
+\newpage
+
+# References
+
+<div id="refs"></div>
+
+\newpage
+
+# (APPENDIX) Appendix {-}
+
+```{r, eval=F}
+library(survival)
+library(randomForestSRC)
+library(survAUC)
+library(survminer)
+library(dplyr)
+library(finalfit)
+library(patchwork)
+
+data(cancer, package = 'survival')
+df <- na.omit(mgus2)
+
+## splitting data for training
+X <- df[, 2:7] # (2:7)[-3]
+died <- df$death == 1
+times <- df$futime
+split <- iai::split_data('survival', X, died, times, seed=437)
+train_X <- split$train$X
+train_died <- split$train$deaths
+train_times <- split$train$times
+test_X <- split$test$X
+test_died <- split$test$deaths
+test_times <- split$test$times
+
+## corresponding split for coxph and rsf
+train.df <- cbind(train_times, train_died, train_X)
+names(train.df) <- c('time', 'status', names(train.df)[-c(1,2)])
+test.df <- cbind(test_times, test_died, test_X)
+names(test.df) <- c('time', 'status', names(test.df)[-c(1,2)])
+
+###########################
+# EDA
+###########################
+
+## check for NA
+head(mgus2)
+sum(is.na(mgus2))
+
+## life table
+survival_object <- mgus2 %$% 
+  Surv(futime, death)
+fit <- survfit(survival_object ~ 1, data = mgus2)
+summary(fit, times = seq(0, 50, by=10))
+
+## Kaplan-Meier for sex
+dependent <- 'Surv(futime, death)'
+explanatory <- 'sex'
+mgus2 %>%
+  surv_plot(
+    dependent, explanatory, pval=F, size=0.7,
+    censor.size=2, risk.table.fontsize=3,
+    risk.table=T)
+
+## training and testing sets for Cox and RSF
+head(train.df)
+head(test.df)
+
+###########################
+# models
+###########################
+
+## fit Cox models and visualize
+fit.cox <- coxph(
+  Surv(time, status) ~ .,
+  data=train.df); summary(fit.cox)
+fit.cox.test <- coxph(
+  Surv(time, status) ~ .,
+  data=test.df); summary(fit.cox.test)
+p1 <- ggadjustedcurves(fit.cox, data=train.df, variable='sex')
+p2 <- ggadjustedcurves(fit.cox.test, data=test.df, variable = 'sex')
+# survival curve for sex
+p1 + p2
+
+## fit and visualize RSF models
+fit.tree.rfsrc <- rfsrc(
+  Surv(time, status) ~ .,
+  data=train.df, ntree=1, nodedepth=3); fit.tree.rfsrc
+plot(get.tree(fit.tree.rfsrc, 1))
+fit.tree.rfsrc.test <- rfsrc(
+  Surv(time, status) ~ .,
+  data=test.df, ntree=1, nodedepth=3); fit.tree.rfsrc.test
+plot(get.tree(fit.tree.rfsrc.test, 1))
+
+## optimal survival tree
+grid <- iai::grid_search(
+  iai::optimal_tree_survival_learner(
+    random_seed = 1,
+    missingdatamode = 'separate_class',
+    minbucket = 1,
+  ),
+  max_depth = 1:3,
+)
+fit.ost <- iai::fit(grid, train_X, train_died, train_times,
+                    validation_criterion = 'harrell_c_statistic')
+iai::get_learner(grid)
+iai::get_grid_result_summary(grid)
+
+###########################
+# comparison
+###########################
+
+## concordance value
+cox.c.stat <- c(concordance(fit.cox)$concordance,
+                concordance(fit.cox.test)$concordance)
+tree.c.fn <- function(x, died, times)
+  iai::score(grid, x, died, times, criterion='harrell_c_statistic')
+ost.c.stat <- c(
+  tree.c.fn(train_X, train_died, train_times),
+  tree.c.fn(test_X, test_died, test_times))
+tree.c.stat <- c(1-fit.tree.rfsrc$err.rate,
+                 1-fit.tree.rfsrc.test$err.rate)
+# table
+c.stat <- rbind(ost.c.stat, tree.c.stat, cox.c.stat)
+colnames(c.stat) <- c('training', 'testing')
+
+## OST AUC
+ost.auc <- c()
+treeaucmap <- function(t) {
+  tryCatch(
+    expr = {
+      iai::score(grid, test_X, test_died, test_times,
+                 criterion = 'auc', evaluation_time=t)
+    },
+    error = function(e){
+      message(paste('error at:',t))
+    }
+  )
+}
+for (i in test_times) {
+  ost.auc <- c(ost.auc, treeaucmap(i))
+}
+## tree AUC
+pred.struct <- predict(fit.tree.rfsrc)$yvar
+lp <- pred.struct[,2]
+pred.struct.test <- predict(fit.tree.rfsrc, newdata=test.df)$yvar
+lpnew <- pred.struct.test[,2]
+Surv.rsp <- Surv(train.df$time, train.df$status)
+Surv.rsp.new <- Surv(test.df$time, test.df$status)
+tree.auc <- AUC.cd(
+  Surv.rsp, Surv.rsp.new, lp, lpnew, test_times)$auc
+## cox AUC
+lp <- predict(fit.cox)
+lpnew <- predict(fit.cox, newdata=test.df)
+cox.auc <- AUC.cd(Surv.rsp, Surv.rsp.new, lp, lpnew, test_times)$auc
+# table
+auc.stat <- rbind(ost.auc, tree.auc, cox.auc)
+colnames(auc.stat) <- test_times
+
+## comparison results
+round(c.stat, 4)
+round(rowMeans(auc.stat), 4)
+```
