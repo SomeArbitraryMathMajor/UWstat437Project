@@ -12,4 +12,4 @@
 ## Studied Paper
 
 The main paper we worked with
-- 
+- Bertsimas D., Gibson E., Dunn J., and Orfanoudaki A. 2022. “Optimal Survival Trees.” Machine Learning 111: 2951–3023.
